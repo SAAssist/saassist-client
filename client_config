@@ -1,0 +1,27 @@
+#
+# Security APAR Assist Client (saassist-client) config file
+#
+
+# Security APAR Assist Installation PATH
+# this is tha path where your client will be available
+SAA_PATH="/Users/kairoaraujo/saassist-client"
+
+# Temporally directory used to store APARs and files
+# is important a file with enough space to save files around 200Mb
+SAA_TMP_DIR="/Users/kairoaraujo/tmp"
+
+# Security APAR Assist Server Address or name
+SAA_SERVER="192.168.100.200"
+
+# Type of protocol to be used
+# Available protocols: http and nfs
+# ** http requires curl command available
+SAA_PROTOCOL='nfs'
+
+# SAA Server HTTP Port (only if you are using http protocol)
+SAA_PORT="8000"
+
+# SAA Server NFS Filesystem (only if you are using nfs protocol)
+SAA_FILESYSTEM='/saassist-server/saassist/data/repos'
+
+
