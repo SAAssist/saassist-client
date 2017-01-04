@@ -219,25 +219,28 @@ saassist-server structure
           . apar_data()
 
 
-   1. [ saassist-server.py ]
-      { user: CVE / IV }
-      { user: update or no }
-      --> saassist/saaserver.py
+    SCHEMA
+    ======
 
-   2. [ saassist/saaserver.py ]
-      { invoke datacollector.py with CVE/IV }
-      --> saassist/datacollector.py
+    1. [ saassist-server.py ]
+       { user: CVE / IV }
+       { user: update or no }
+       --> saassist/saaserver.py
 
-   3. [ saassist/datacollector.py ]
-      { access FLRT website }
-      { do parsing of data }
-      { return the data in a dictionary }
-      saassist/saaserver <--
+    2. [ saassist/saaserver.py ]
+       { invoke datacollector.py with CVE/IV }
+       --> saassist/datacollector.py
 
-   4. [ saassist/saaserver.py ]
-      { validate data }
-      { create the repository data }
-      { output actions: user }
+    3. [ saassist/datacollector.py ]
+       { access FLRT website }
+       { do parsing of data }
+       { return the data in a dictionary }
+       saassist/saaserver <--
+
+    4. [ saassist/saaserver.py ]
+       { validate data }
+       { create the repository data }
+       { output actions: user }
 
 
 PyDoc saassist-server python files
@@ -389,3 +392,4 @@ saassist-client is a simple Korn Shell (ksh)
     * client_config has global variables
 
     * saassist-client is the main ksh that retrieves informations from server
+

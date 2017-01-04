@@ -6,7 +6,7 @@
 #
 #
 
-version='0.1-beta'
+version='0.1'
 
 if [ -f ./client_config ]; then
     . ./client_config
@@ -22,6 +22,7 @@ server_release=$(oslevel -s | awk -F'-' '{ print $1"-"$2"-"$3 }')
 server_url="http://$SAA_SERVER:$SAA_PORT/"
 secid_url="$server_url$2/"
 secid_url_version="$secid_url$server_version/"
+
 
 # Function to check if SAA Server is ready using NFS
 function _check_APAR_nfs {
@@ -69,11 +70,14 @@ function _check_APAR_http {
 
 }
 
+# function to check if the temporally fs is ready to be used
+# the temporally filesystem came from client_config file
 function _check_tmp_dir {
 
     if [ ! -d $SAA_TMP_DIR ]; then
         echo "[ERROR] Check the client_config SAA_TMP_DIR."
         echo "        Directory doesn't exist."
+        exit 1
     fi
 
     if [ ! -d $SAA_TMP_DIR/$1 ]; then
@@ -83,7 +87,7 @@ function _check_tmp_dir {
 # function to check CVE/IV on server
 function _check_secid {
 
-    # check
+    # check if APAR fix is available on http/nfs server
     if [ ${SAA_PROTOCOL} == 'http' ]; then
         secid_test=$(curl -o /dev/null -s -I -f ${secid_url})
         rc=$?
@@ -106,6 +110,7 @@ function _check_secid {
         exit 1
 
     else
+        # if available, check if the version is affected
         echo "[CLIENT] Retrieving APAR $1 info from ${SAA_SERVER}"
         echo "[CLIENT] Checking if CVE/IV is applicable for OS version $(oslevel -r)"
         if [ ${SAA_PROTOCOL} == 'http' ]; then
@@ -142,6 +147,8 @@ function _check_secid {
 
         fi
 
+        # if the version is affected next step is check with the release is
+        # affected
         if [ $system_affected == 'True' ]; then
             echo "[CLIENT] Checking if CVE/IV is applicable for OS release $server_release"
             for release in ${AFFECTED_RELEASES}; do
@@ -157,6 +164,8 @@ function _check_secid {
             fi
         fi
 
+        # if the release is affected, check if the fix is already installed
+        # by some TL or SP
         if [ $system_affected == 'True' ]; then
             echo "[CLIENT] Checking if there are APARs already applied"
             for iv in ${REMEDIATION_APARS}; do
@@ -185,6 +194,8 @@ function _check_secid {
             done
         fi
 
+        # if the IV is not already installed, check if some APAR fix is ready
+        # to be installed, it means that iFIX is compatible
         if [ ${system_affected} == "True" ]; then
             echo "[CLIENT] This system is AFFECTED by $1"
             echo "      \`- Downloading APAR to $SAA_TMP_DIR"
@@ -239,6 +250,7 @@ function _check_secid {
 
 }
 
+# function to check the protocols
 function _check_protocols {
     if [ ${SAA_PROTOCOL} == 'http' ]; then
         _check_APAR_http
@@ -249,30 +261,30 @@ function _check_protocols {
     fi
 
 }
+
+# function to get the APAR details info
 function APAR_info  {
 
     if [ ${system_affected} == "True" ]; then
         echo "[CLIENT] This system is AFFECTED by $1"
-        echo "[CLIENT] Getting APAR '$1' info"
-        if [ ${system_affected} == "True" ]; then
-
-            if [ ${SAA_PROTOCOL} == 'http' ]; then
-                sleep 2
-                curl -L ${secid_url_version}/${APAR_ASC} | more
-            fi
-
-            if [ ${SAA_PROTOCOL} == 'nfs' ]; then
-                more ${SAA_FILESYSTEM}/$1/$server_version/${APAR_ASC}
-            fi
-
-        fi
     else
         echo "[CLIENT] This system is NOT AFFECTED by $1"
     fi
 
+    echo "[CLIENT] Getting APAR '$1' info"
+
+    if [ ${SAA_PROTOCOL} == 'http' ]; then
+        sleep 2
+        curl -L ${secid_url_version}/${APAR_ASC} | more
+    fi
+
+    if [ ${SAA_PROTOCOL} == 'nfs' ]; then
+        more ${SAA_FILESYSTEM}/$1/$server_version/${APAR_ASC}
+    fi
 
 }
 
+# function to check if the apar is affected or not
 function APAR_check  {
 
     if [ ${system_affected} == "True" ]; then
@@ -283,6 +295,7 @@ function APAR_check  {
     fi
 }
 
+# function to install the APAR fix after check
 function APAR_install {
 
     if [ ${system_affected} == "True" ]; then
@@ -296,23 +309,26 @@ function APAR_install {
             fi
         done
 
-            apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
-            apar_dir=$(echo $apar_fix | awk -F'.' '{ print $1 }')
-            cd ${SAA_TMP_DIR}/$1
-            if [ $(echo $apar_fix | awk -F'.' '{ print $NF }') == 'tar' ]; then
-                cd $apar_dir
-            fi
+        apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
+        apar_dir=$(echo $apar_fix | awk -F'.' '{ print $1 }')
+        cd ${SAA_TMP_DIR}/$1
 
-            for file in $(ls | grep epkg.Z | grep -v sig); do
-                echo "      \`- Running a $file install preview/test "
-                preview_cmd=$(emgr -p -e $file 2> /dev/null)
-                if [ $? -eq 0 ]; then
-                    echo "      \`- APAR $file is APPLICABLE to the system"
-                    emgr -p -X $file
-                else
-                    echo "      \`- APAR $file is NOT applicable to the system"
-                fi
-            done
+        if [ $(echo $apar_fix | awk -F'.' '{ print $NF }') == 'tar' ]; then
+           cd $apar_dir
+        fi
+
+        for file in $(ls | grep epkg.Z | grep -v sig); do
+            echo "      \`- Running a $file install preview/test "
+            preview_cmd=$(emgr -p -e $file 2> /dev/null)
+
+            if [ $? -eq 0 ]; then
+               echo "      \`- APAR $file is APPLICABLE to the system"
+               emgr -X -e $file
+            else
+               echo "      \`- APAR $file is NOT applicable to the system"
+
+             fi
+         done
     else
         echo "[CLIENT] This system is NOT AFFECTED by $1"
         exit 1
@@ -321,6 +337,7 @@ function APAR_install {
 
 }
 
+# function to print help message
 function _print_help {
 
     echo 'Usage: saassist-client [check|info|install] "CVE|IV-NUM" | help'
