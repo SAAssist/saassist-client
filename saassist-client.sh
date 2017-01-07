@@ -102,7 +102,7 @@ function _check_secid {
     fi
 
     if [ ${SAA_PROTOCOL} == 'nfs' ]; then
-        secid_test=$(ls -ld ${SAA_FILESYSTEM}/$1)
+        secid_test=$(ls -ld ${SAA_FILESYSTEM}/$1 > /dev/null 2>&1)
         rc=$?
     fi
 
@@ -241,8 +241,7 @@ function _check_secid {
                     if [ $? -eq 0 ]; then
                         echo "      \`- APAR $file is APPLICABLE to the system"
                         system_affected='True'
-                        if [ $2 != 'install' ]; then
-				break
+                        break
 			fi
 
                     else
@@ -328,7 +327,6 @@ function APAR_install {
         for file in $(ls | grep epkg.Z | grep -v sig); do
             echo "      \`- Running a $file install preview/test "
             preview_cmd=$(emgr -p -e $file 2> /dev/null)
-
             if [ $? -eq 0 ]; then
                echo "      \`- APAR $file is APPLICABLE to the system"
                emgr -X -e $file
