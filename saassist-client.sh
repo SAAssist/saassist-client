@@ -242,7 +242,6 @@ function _check_secid {
                         echo "      \`- APAR $file is APPLICABLE to the system"
                         system_affected='True'
                         break
-			fi
 
                     else
                         echo "      \`- APAR $file is NOT applicable to the system"
@@ -256,6 +255,7 @@ function _check_secid {
     fi
 
 }
+
 
 # function to check the protocols
 function _check_protocols {
@@ -273,7 +273,7 @@ function _check_protocols {
 function APAR_info  {
 
     if [ ${system_affected} == "True" ]; then
-        echo "[CLIENT] This system is AFFECTED by $1"
+        echo "[CLIENT] This system is AFFECTED by $1 (REBOOT REQUIRED: $APAR_REBOOT)"
     else
         echo "[CLIENT] This system is NOT AFFECTED by $1"
     fi
@@ -295,7 +295,7 @@ function APAR_info  {
 function APAR_check  {
 
     if [ ${system_affected} == "True" ]; then
-        echo "[CLIENT] This system is AFFECTED by $1"
+        echo "[CLIENT] This system is AFFECTED by $1 (REBOOT REQUIRED: $APAR_REBOOT)"
     else
         echo "[CLIENT] This system is NOT AFFECTED by $1"
         exit 1
@@ -333,10 +333,12 @@ function APAR_install {
             else
                echo "      \`- APAR $file is NOT applicable to the system"
 
-             fi
-         done
+            fi
+        done
+        echo
+        echo "[CLIENT] APAR $1 Installation finished. (REBOOT REQUIRED: $APAR_REBOOT)"
     else
-        echo "[CLIENT] This system is NOT AFFECTED by $1"
+        echo "[CLIENT] This system is NOT AFFECTED by $1 "
         exit 1
     fi
 
