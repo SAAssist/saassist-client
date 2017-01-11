@@ -22,6 +22,6 @@ SAA_PROTOCOL='nfs'
 SAA_PORT="8000"
 
 # SAA Server NFS Filesystem (only if you are using nfs protocol)
-SAA_FILESYSTEM='/saassist-server/saassist/data/repos'
+SAA_FILESYSTEM='../saassist-server/saassist/data/repos'
 
 
