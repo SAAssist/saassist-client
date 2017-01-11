@@ -234,7 +234,7 @@ function _check_secid {
                 fi
 
                 for file in $(ls | grep epkg.Z | grep -v sig); do
-                    echo "      \`- Running a $file preview "
+                    echo "      \`- Running $file preview "
                     preview_cmd=$(emgr -p -e $file 2> /dev/null)
                     if [ $? -eq 0 ]; then
                         echo "      \`- APAR $file is APPLICABLE to the system"
@@ -323,7 +323,7 @@ function _check_secid_allv {
         fi
 
         for file in $(ls | grep epkg.Z | grep -v sig); do
-            echo "      \`- Running a $file preview "
+            echo "      \`- Running $file preview "
             preview_cmd=$(emgr -p -e $file 2> /dev/null)
             if [ $? -eq 0 ]; then
                 echo "      \`- APAR $file is APPLICABLE to the system"
@@ -408,7 +408,7 @@ function APAR_install {
         fi
 
         for file in $(ls | grep epkg.Z | grep -v sig); do
-            echo "      \`- Running a $file install preview/test "
+            echo "      \`- Running $file install preview/test "
             preview_cmd=$(emgr -p -e $file 2> /dev/null)
             if [ $? -eq 0 ]; then
                echo "      \`- APAR $file is APPLICABLE to the system"
@@ -450,7 +450,7 @@ function APAR_install_allv {
         fi
 
         for file in $(ls | grep epkg.Z | grep -v sig); do
-            echo "      \`- Running a $file install preview/test "
+            echo "      \`- Running $file install preview/test "
             preview_cmd=$(emgr -p -e $file 2> /dev/null)
             if [ $? -eq 0 ]; then
                echo "      \`- APAR $file is APPLICABLE to the system"
