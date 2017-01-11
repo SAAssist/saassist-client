@@ -31,7 +31,6 @@ server_url="http://$SAA_SERVER:$SAA_PORT/"
 secid_url="$server_url$2/"
 secid_url_version="$secid_url$server_version/"
 
-
 # Function to check if SAA Server is ready using NFS
 function _check_APAR_nfs {
         echo "[CLIENT] Verifying SAA Server over NFS"
@@ -130,7 +129,6 @@ function _check_secid {
             secid_version_test=$(ls -ld ${SAA_FILESYSTEM}/$1/$server_version > /dev/null 2>&1)
             rc=$?
         fi
-
         if [ $rc -ne 0 ]; then
             echo "      \`- The version $(oslevel -r) is not affected by $1"
             system_affected='False'
@@ -274,9 +272,27 @@ function _check_secid_allv {
 
     if [ $rc -eq 0 ]; then
         # if available, check if the version is affected
-        echo "[CLIENT] Was detected that this APAR is not for a specific AIX/PowerVM VIOS"
-        echo "         $APAR_ABSTRACT"
+
         echo "[CLIENT] Retrieving APAR $1 info from ${SAA_SERVER}"
+        if [ ${SAA_PROTOCOL} == 'http' ]; then
+            curl -s ${secid_url_all}/$1.info -o ${SAA_TMP_DIR}/$1/$1.info
+            rc=$?
+        fi
+
+        if [ ${SAA_PROTOCOL} == 'nfs' ]; then
+            cp ${SAA_FILESYSTEM}/$1/ALL/$1.info ${SAA_TMP_DIR}/$1/$1.info > /dev/null 2>&1
+            rc=$?
+        fi
+
+        if [ $rc -ne 0 ]; then
+            echo "[ERROR] Failed to saved the $1.info file"
+            exit 1
+        fi
+        . /${SAA_TMP_DIR}/$1/$1.info
+        system_affected_allv='True'
+
+        echo "[CLIENT] Was detected that this APAR also is not for a specific AIX/PowerVM"
+        echo "         -> ${APAR_ABSTRACT}"
 
         for apar in ${APAR_FIX}; do
             apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
@@ -300,7 +316,6 @@ function _check_secid_allv {
 
         apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
         apar_dir=$(echo $apar_fix | awk -F'.' '{ print $1 }')
-        echo $apar_fix $apar_dir
         cd ${SAA_TMP_DIR}/$1
         if [ $(echo $apar_fix | awk -F'.' '{ print $NF }') == 'tar' ]; then
             tar xvf $apar_fix > /dev/null 2>&1
@@ -361,8 +376,8 @@ function APAR_info  {
 
 # function to check if the apar is affected or not
 function APAR_check  {
-
-    if [ ${system_affected} == "True" ]; then
+    if [ $system_affected == "True" ] || [ $system_affected_allv == "True" ];
+    then
         echo "[CLIENT] This system is AFFECTED by $1 (REBOOT REQUIRED: $APAR_REBOOT)"
     else
         echo "[CLIENT] This system is NOT AFFECTED by $1"
@@ -503,8 +518,8 @@ case $1 in
 
         _check_tmp_dir $2
         _check_protocols
-        _check_secid $2 $1
-        _check_secid_allv $2 $1
+        _check_secid $2
+        _check_secid_allv $2
 	echo
         APAR_check $2
 
@@ -516,8 +531,8 @@ case $1 in
 
         _check_tmp_dir $2
         _check_protocols
-        _check_secid $2 $1
-        _check_secid_allv $2 $1
+        _check_secid $2
+        _check_secid_allv $2
         echo
         APAR_info $2
 
@@ -527,8 +542,8 @@ case $1 in
 
         _check_tmp_dir $2
         _check_protocols
-        _check_secid $2 $1
-        _check_secid_allv $2 $1
+        _check_secid $2
+        _check_secid_allv $2
         echo
         APAR_install $2
         APAR_install_allv $2
