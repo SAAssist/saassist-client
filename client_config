@@ -8,7 +8,7 @@ SAA_PATH="/Users/kairoaraujo/saassist-client"
 
 # Temporally directory used to store APARs and files
 # is important a file with enough space to save files around 200Mb
-SAA_TMP_DIR="/Users/kairoaraujo/tmp"
+SAA_TMP_DIR="/tmp"
 
 # Security APAR Assist Server Address or name
 SAA_SERVER="192.168.100.200"
@@ -22,6 +22,6 @@ SAA_PROTOCOL='nfs'
 SAA_PORT="8000"
 
 # SAA Server NFS Filesystem (only if you are using nfs protocol)
-SAA_FILESYSTEM='/saassist-server/saassist/data/repos'
+SAA_FILESYSTEM='../saassist-server/saassist/data/repos'
 
 

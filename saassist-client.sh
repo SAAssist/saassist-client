@@ -31,12 +31,11 @@ server_url="http://$SAA_SERVER:$SAA_PORT/"
 secid_url="$server_url$2/"
 secid_url_version="$secid_url$server_version/"
 
-
 # Function to check if SAA Server is ready using NFS
 function _check_APAR_nfs {
         echo "[CLIENT] Verifying SAA Server over NFS"
 
-        find_nfs=$(df -k | grep : | grep ${SAA_SERVER})
+        #find_nfs=$(df -k | grep : | grep ${SAA_SERVER})
         if [ $? -ne 0 ]; then
             echo "[CLIENT] Filesystem ${SAA_FILESYTEM} not found"
             echo "[CLIENT] Trying to mount..."
@@ -130,7 +129,6 @@ function _check_secid {
             secid_version_test=$(ls -ld ${SAA_FILESYSTEM}/$1/$server_version > /dev/null 2>&1)
             rc=$?
         fi
-
         if [ $rc -ne 0 ]; then
             echo "      \`- The version $(oslevel -r) is not affected by $1"
             system_affected='False'
@@ -236,7 +234,7 @@ function _check_secid {
                 fi
 
                 for file in $(ls | grep epkg.Z | grep -v sig); do
-                    echo "      \`- Running a $file preview "
+                    echo "      \`- Running $file preview "
                     preview_cmd=$(emgr -p -e $file 2> /dev/null)
                     if [ $? -eq 0 ]; then
                         echo "      \`- APAR $file is APPLICABLE to the system"
@@ -256,6 +254,91 @@ function _check_secid {
 
 }
 
+# function to check if there the APAR is for ALL version.
+# this is updates for OpenSSL, OpenSSH, Java -- 'non-natives' AIX/PowerVM
+# filesets and is better check for all versions. It is not for specific version
+function _check_secid_allv {
+
+    secid_url_all="${secid_url}ALL"
+    if [ ${SAA_PROTOCOL} == 'http' ]; then
+        secid_version_test=$(curl -o /dev/null -s -I -f ${secid_url_all})
+        rc=$?
+    fi
+
+    if [ ${SAA_PROTOCOL} == 'nfs' ]; then
+        secid_version_test=$(ls -ld ${SAA_FILESYSTEM}/$1/ALL > /dev/null 2>&1)
+        rc=$?
+    fi
+
+    if [ $rc -eq 0 ]; then
+        # if available, check if the version is affected
+
+        echo "[CLIENT] Retrieving APAR $1 info from ${SAA_SERVER}"
+        if [ ${SAA_PROTOCOL} == 'http' ]; then
+            curl -s ${secid_url_all}/$1.info -o ${SAA_TMP_DIR}/$1/$1.info
+            rc=$?
+        fi
+
+        if [ ${SAA_PROTOCOL} == 'nfs' ]; then
+            cp ${SAA_FILESYSTEM}/$1/ALL/$1.info ${SAA_TMP_DIR}/$1/$1.info > /dev/null 2>&1
+            rc=$?
+        fi
+
+        if [ $rc -ne 0 ]; then
+            echo "[ERROR] Failed to saved the $1.info file"
+            exit 1
+        fi
+        . /${SAA_TMP_DIR}/$1/$1.info
+        system_affected_allv='True'
+
+        echo "[CLIENT] Was detected that this APAR also is not for a specific AIX/PowerVM"
+        echo "         -> ${APAR_ABSTRACT}"
+
+        for apar in ${APAR_FIX}; do
+            apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
+
+            if [ ${SAA_PROTOCOL} == 'http' ]; then
+                curl -s $secid_url_all/$apar_fix -o $SAA_TMP_DIR/$1/$apar_fix
+                rc=$?
+            fi
+
+            if [ ${SAA_PROTOCOL} == 'nfs' ]; then
+                cp ${SAA_FILESYSTEM}/$1/ALL/$apar_fix ${SAA_TMP_DIR}/$1/$apar_fix > /dev/null 2>&1
+                rc=$?
+            fi
+
+
+            if [ $rc -ne 0 ]; then
+                 echo "[ERROR] Failed to download ${apar_fix}"
+                 exit 1
+            fi
+        done
+
+        apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
+        apar_dir=$(echo $apar_fix | awk -F'.' '{ print $1 }')
+        cd ${SAA_TMP_DIR}/$1
+        if [ $(echo $apar_fix | awk -F'.' '{ print $NF }') == 'tar' ]; then
+            tar xvf $apar_fix > /dev/null 2>&1
+            cd $apar_dir
+        fi
+
+        for file in $(ls | grep epkg.Z | grep -v sig); do
+            echo "      \`- Running $file preview "
+            preview_cmd=$(emgr -p -e $file 2> /dev/null)
+            if [ $? -eq 0 ]; then
+                echo "      \`- APAR $file is APPLICABLE to the system"
+                system_affected_allv='True'
+                break
+
+            else
+                echo "      \`- APAR $file is NOT applicable to the system"
+                system_affected_allv='False'
+                #emgr -p -e $file 2> /dev/null| grep -p "Prerequisite Number:"
+
+            fi
+        done
+    fi
+}
 
 # function to check the protocols
 function _check_protocols {
@@ -293,8 +376,8 @@ function APAR_info  {
 
 # function to check if the apar is affected or not
 function APAR_check  {
-
-    if [ ${system_affected} == "True" ]; then
+    if [ $system_affected == "True" ] || [ $system_affected_allv == "True" ];
+    then
         echo "[CLIENT] This system is AFFECTED by $1 (REBOOT REQUIRED: $APAR_REBOOT)"
     else
         echo "[CLIENT] This system is NOT AFFECTED by $1"
@@ -305,7 +388,7 @@ function APAR_check  {
 # function to install the APAR fix after check
 function APAR_install {
 
-    if [ ${system_affected} == "True" ]; then
+    if [ $system_affected == "True" ]; then
         echo "[CLIENT] Starting the APAR $1 in 10 seconds. Use CTRL+C to cancel now!"
         sleep 10
         for apar in ${APAR_FIX}; do
@@ -325,7 +408,49 @@ function APAR_install {
         fi
 
         for file in $(ls | grep epkg.Z | grep -v sig); do
-            echo "      \`- Running a $file install preview/test "
+            echo "      \`- Running $file install preview/test "
+            preview_cmd=$(emgr -p -e $file 2> /dev/null)
+            if [ $? -eq 0 ]; then
+               echo "      \`- APAR $file is APPLICABLE to the system"
+               emgr -X -e $file
+            else
+               echo "      \`- APAR $file is NOT applicable to the system"
+
+            fi
+        done
+        echo
+        echo "[CLIENT] APAR $1 Installation finished. (REBOOT REQUIRED: $APAR_REBOOT)"
+    else
+        echo "[CLIENT] This system is NOT AFFECTED by $1 "
+        exit 1
+    fi
+
+}
+
+# install APARs All versions if affected
+function APAR_install_allv {
+
+    if [ $system_affected_allv == "True" ]; then
+        echo "[CLIENT] Starting the APAR $1 in 10 seconds. Use CTRL+C to cancel now!"
+        sleep 10
+        for apar in ${APAR_FIX}; do
+            apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
+            if [ $? -ne 0 ]; then
+                echo "[ERROR] Failed to download ${apar_fix}"
+                exit 1
+            fi
+        done
+
+        apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
+        apar_dir=$(echo $apar_fix | awk -F'.' '{ print $1 }')
+        cd ${SAA_TMP_DIR}/$1
+
+        if [ $(echo $apar_fix | awk -F'.' '{ print $NF }') == 'tar' ]; then
+           cd $apar_dir
+        fi
+
+        for file in $(ls | grep epkg.Z | grep -v sig); do
+            echo "      \`- Running $file install preview/test "
             preview_cmd=$(emgr -p -e $file 2> /dev/null)
             if [ $? -eq 0 ]; then
                echo "      \`- APAR $file is APPLICABLE to the system"
@@ -344,6 +469,7 @@ function APAR_install {
 
 
 }
+
 
 # function to print help message
 function _print_help {
@@ -392,7 +518,8 @@ case $1 in
 
         _check_tmp_dir $2
         _check_protocols
-        _check_secid $2 $1
+        _check_secid $2
+        _check_secid_allv $2
 	echo
         APAR_check $2
 
@@ -404,7 +531,8 @@ case $1 in
 
         _check_tmp_dir $2
         _check_protocols
-        _check_secid $2 $1
+        _check_secid $2
+        _check_secid_allv $2
         echo
         APAR_info $2
 
@@ -414,9 +542,11 @@ case $1 in
 
         _check_tmp_dir $2
         _check_protocols
-        _check_secid $2 $1
+        _check_secid $2
+        _check_secid_allv $2
         echo
         APAR_install $2
+        APAR_install_allv $2
 
     ;;
 
