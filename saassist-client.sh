@@ -337,6 +337,10 @@ function _check_secid_allv {
 
             fi
         done
+        
+    else
+        system_affected_allv='False'
+        
     fi
 }
 
