@@ -16,6 +16,7 @@
 
 version='0.1'
 
+
 if [ -f ./client_config ]; then
     . ./client_config
 else
@@ -25,11 +26,26 @@ else
 fi
 
 # Basic variables
-server_version=$(oslevel -r)
-server_release=$(oslevel -s | awk -F'-' '{ print $1"-"$2"-"$3 }')
+if [ -f /usr/ios/cli/ioscli ]; then
+   server_version=$(/usr/ios/cli/ioscli ioslevel | awk -F . '{ print $1"."$2 }')
+   server_release=$(/usr/ios/cli/ioscli ioslevel)
+
+else
+   server_version=$(oslevel -r)
+   server_release=$(oslevel -s | awk -F'-' '{ print $1"-"$2"-"$3 }')
+
+fi
+
 server_url="http://$SAA_SERVER:$SAA_PORT/"
 secid_url="$server_url$2/"
 secid_url_version="$secid_url$server_version/"
+
+# check if there is a emgr lock file
+if [ -f /var/locks/emgr.lock ]; then
+    echo "[ERROR] SAAssist found a emgr lock file /var/locks/emgr.lock"
+    echo "        Check if process $(cat /var/locks/emgr.lock) exists and remove file"
+    exit 1
+fi
 
 # Function to check if SAA Server is ready using NFS
 function _check_APAR_nfs {
@@ -119,7 +135,7 @@ function _check_secid {
     else
         # if available, check if the version is affected
         echo "[CLIENT] Retrieving APAR $1 info from ${SAA_SERVER}"
-        echo "[CLIENT] Checking if CVE/IV is applicable for OS version $(oslevel -r)"
+        echo "[CLIENT] Checking if CVE/IV is applicable for OS version $server_version"
         if [ ${SAA_PROTOCOL} == 'http' ]; then
             secid_version_test=$(curl -o /dev/null -s -I -f ${secid_url_version})
             rc=$?
@@ -130,7 +146,7 @@ function _check_secid {
             rc=$?
         fi
         if [ $rc -ne 0 ]; then
-            echo "      \`- The version $(oslevel -r) is not affected by $1"
+            echo "      \`- The version $server_version is not affected by $1"
             system_affected='False'
         else
             echo "      \`- This server is affected by $1"
@@ -180,7 +196,13 @@ function _check_secid {
                 else
                     iv_ver=$(echo "$iv" | awk -F. '{ print $1"."$2 }')
                 fi
-                os_ver=$(oslevel | awk -F'.' '{ print $1"."$2 }')
+                if [ -f /usr/ios/cli/ioscli ]; then
+                    os_ver=$server_version
+
+                else
+                    os_ver=$(oslevel | awk -F'.' '{ print $1"."$2 }')
+                fi
+
                 if [ "$iv_ver" == "$os_ver" ]; then
                     if [ $(echo $1 | cut -c1-2) == "IV" ]; then
                         apar_name=$1
@@ -213,7 +235,7 @@ function _check_secid {
                     rc=$?
                 fi
 
-                if [ ${SAA_PROTOCOL} == 'nfs' ]; then
+               if [ ${SAA_PROTOCOL} == 'nfs' ]; then
                     cp ${SAA_FILESYSTEM}/$1/$server_version/$apar_fix ${SAA_TMP_DIR}/$1/$apar_fix > /dev/null 2>&1
                     rc=$?
                 fi
@@ -225,29 +247,33 @@ function _check_secid {
                 fi
             done
 
-                apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
-                apar_dir=$(echo $apar_fix | awk -F'.' '{ print $1 }')
-                cd ${SAA_TMP_DIR}/$1
-                if [ $(echo $apar_fix | awk -F'.' '{ print $NF }') == 'tar' ]; then
-                    tar xvf $apar_fix > /dev/null 2>&1
-                    cd $apar_dir
-                fi
+            apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
+            apar_dir=$(echo $apar_fix | awk -F'.' '{ print $1 }')
+            cd ${SAA_TMP_DIR}/$1
+            if [ $(echo $apar_fix | awk -F'.' '{ print $NF }') == 'tar' ]; then
+                tar xvf $apar_fix > /dev/null 2>&1
+                cd $apar_dir
+            fi
 
-                for file in $(ls | grep epkg.Z | grep -v sig); do
-                    echo "      \`- Running $file preview "
-                    preview_cmd=$(emgr -p -e $file 2> /dev/null)
+            for file in $(ls | grep epkg.Z | grep -v sig); do
+                echo "      \`- Running $file preview "
+                preview_cmd=$(emgr -p -e $file 2>&1)
+                if [ $? -eq 0 ]; then
+                    echo "      \`- APAR $file is APPLICABLE to the system"
+                    system_affected='True'
+                    break
+                else
+                    efix_locked=$(echo "$preview_cmd" | grep "locked by efix")
                     if [ $? -eq 0 ]; then
                         echo "      \`- APAR $file is APPLICABLE to the system"
                         system_affected='True'
                         break
-
                     else
                         echo "      \`- APAR $file is NOT applicable to the system"
                         system_affected='False'
-                        #emgr -p -e $file 2> /dev/null| grep -p "Prerequisite Number:"
-
                     fi
-                done
+                fi
+            done
         fi
 
     fi
@@ -291,7 +317,7 @@ function _check_secid_allv {
         . /${SAA_TMP_DIR}/$1/$1.info
         system_affected_allv='True'
 
-        echo "[CLIENT] Was detected that this APAR also is not for a specific AIX/PowerVM"
+        echo "[CLIENT] Was detected that this APAR also there is a 'general' PowerVM/AIX efix."
         echo "         -> ${APAR_ABSTRACT}"
 
         for apar in ${APAR_FIX}; do
@@ -324,23 +350,27 @@ function _check_secid_allv {
 
         for file in $(ls | grep epkg.Z | grep -v sig); do
             echo "      \`- Running $file preview "
-            preview_cmd=$(emgr -p -e $file 2> /dev/null)
+            preview_cmd=$(emgr -p -e $file 2>&1)
             if [ $? -eq 0 ]; then
                 echo "      \`- APAR $file is APPLICABLE to the system"
                 system_affected_allv='True'
                 break
-
             else
-                echo "      \`- APAR $file is NOT applicable to the system"
-                system_affected_allv='False'
-                #emgr -p -e $file 2> /dev/null| grep -p "Prerequisite Number:"
-
+                efix_locked=$(echo "$preview_cmd" | grep "locked by efix")
+                if [ $? -eq 0 ]; then
+                    echo "      \`- APAR $file is APPLICABLE to the system"
+                    system_affected_allv='True'
+                    break
+                else
+                    echo "      \`- APAR $file is NOT applicable to the system"
+                    system_affected_allv='False'
+                fi
             fi
         done
-        
+
     else
         system_affected_allv='False'
-        
+
     fi
 }
 
@@ -359,7 +389,7 @@ function _check_protocols {
 # function to get the APAR details info
 function APAR_info  {
 
-    if [ ${system_affected} == "True" ]; then
+    if [ $system_affected == "True" ] || [ system_affected_allv == "True" ]; then
         echo "[CLIENT] This system is AFFECTED by $1 (REBOOT REQUIRED: $APAR_REBOOT)"
     else
         echo "[CLIENT] This system is NOT AFFECTED by $1"
@@ -413,13 +443,23 @@ function APAR_install {
 
         for file in $(ls | grep epkg.Z | grep -v sig); do
             echo "      \`- Running $file install preview/test "
-            preview_cmd=$(emgr -p -e $file 2> /dev/null)
+            preview_cmd=$(emgr -p -e $file 2>&1)
             if [ $? -eq 0 ]; then
-               echo "      \`- APAR $file is APPLICABLE to the system"
-               emgr -X -e $file
+                echo "      \`- APAR $file is APPLICABLE to the system"
+                emgr -X -e $file
+                break
             else
-               echo "      \`- APAR $file is NOT applicable to the system"
-
+                efix_locked=$(echo "$preview_cmd" | grep "locked by efix")
+                if [ $? -eq 0 ]; then
+                    locker=$(echo "$efix_locked" | head -1 | awk '{ print $NF}' | awk -F \" '{ print $2 }')
+                    echo "      \`- Uninstalling the efix locker $locker"
+                    emgr -r -L $locker
+                    echo "      \`- Installing the new efix"
+                    emgr -X -e $file
+                    break
+                else
+                    echo "      \`- APAR $file is NOT applicable to the system"
+                fi
             fi
         done
         echo
@@ -455,13 +495,24 @@ function APAR_install_allv {
 
         for file in $(ls | grep epkg.Z | grep -v sig); do
             echo "      \`- Running $file install preview/test "
-            preview_cmd=$(emgr -p -e $file 2> /dev/null)
+            preview_cmd=$(emgr -p -e $file 2>&1)
             if [ $? -eq 0 ]; then
-               echo "      \`- APAR $file is APPLICABLE to the system"
-               emgr -X -e $file
-            else
-               echo "      \`- APAR $file is NOT applicable to the system"
+                echo "      \`- APAR $file is APPLICABLE to the system"
+                emgr -X -e $file
+                break
 
+            else
+                efix_locked=$(echo "$preview_cmd" | grep "locked by efix")
+                if [ $? -eq 0 ]; then
+                    locker=$(echo "$efix_locked" | head -1 | awk '{ print $NF}' | awk -F \" '{ print $2 }')
+                    echo "      \`- Uninstalling the efix locker $locker"
+                    emgr -r -L $locker
+                    echo "      \`- Installing the new efix"
+                    emgr -X -e $file
+                    break
+                else
+                    echo "      \`- APAR $file is NOT applicable to the system"
+                fi
             fi
         done
         echo
@@ -507,7 +558,7 @@ echo "========================================================================"
 echo "SAAssist-client (Security APAR Assist Client) - Version $version"
 echo "========================================================================"
 echo
-echo "Current OS Version: $(oslevel -s)"
+echo "Current OS Version: $server_release"
 echo
 if [ -z $2 ]; then
     echo "[ERROR] A CVE or IV is required"
@@ -523,8 +574,10 @@ case $1 in
         _check_tmp_dir $2
         _check_protocols
         _check_secid $2
-        _check_secid_allv $2
-	echo
+        if [ $system_affected == "False" ]; then
+            _check_secid_allv $2
+        fi
+        echo
         APAR_check $2
 
 
@@ -536,7 +589,9 @@ case $1 in
         _check_tmp_dir $2
         _check_protocols
         _check_secid $2
-        _check_secid_allv $2
+        if [ $system_affected == "False" ]; then
+            _check_secid_allv $2
+        fi
         echo
         APAR_info $2
 
@@ -547,11 +602,15 @@ case $1 in
         _check_tmp_dir $2
         _check_protocols
         _check_secid $2
-        _check_secid_allv $2
         echo
-        APAR_install $2
-        APAR_install_allv $2
-
+        if [ $system_affected == "False" ]; then
+           _check_secid_allv $2
+           APAR_check $2
+           APAR_install_allv $2
+        else
+           echo
+           APAR_install $2
+        fi
     ;;
 
     *)
