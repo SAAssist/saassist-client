@@ -16,6 +16,7 @@
 
 version='0.1'
 
+
 if [ -f ./client_config ]; then
     . ./client_config
 else
@@ -30,6 +31,13 @@ server_release=$(oslevel -s | awk -F'-' '{ print $1"-"$2"-"$3 }')
 server_url="http://$SAA_SERVER:$SAA_PORT/"
 secid_url="$server_url$2/"
 secid_url_version="$secid_url$server_version/"
+
+# check if there is a emgr lock file
+if [ -f /var/locks/emgr.lock ]; then
+    echo "[ERROR] SAAssist found a emgr lock file /var/locks/emgr.lock"
+    echo "        Check if process $(cat /var/locks/emgr.lock) exists and remove file"
+    exit 1
+fi
 
 # Function to check if SAA Server is ready using NFS
 function _check_APAR_nfs {
@@ -213,7 +221,7 @@ function _check_secid {
                     rc=$?
                 fi
 
-                if [ ${SAA_PROTOCOL} == 'nfs' ]; then
+               if [ ${SAA_PROTOCOL} == 'nfs' ]; then
                     cp ${SAA_FILESYSTEM}/$1/$server_version/$apar_fix ${SAA_TMP_DIR}/$1/$apar_fix > /dev/null 2>&1
                     rc=$?
                 fi
@@ -225,29 +233,33 @@ function _check_secid {
                 fi
             done
 
-                apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
-                apar_dir=$(echo $apar_fix | awk -F'.' '{ print $1 }')
-                cd ${SAA_TMP_DIR}/$1
-                if [ $(echo $apar_fix | awk -F'.' '{ print $NF }') == 'tar' ]; then
-                    tar xvf $apar_fix > /dev/null 2>&1
-                    cd $apar_dir
-                fi
+            apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
+            apar_dir=$(echo $apar_fix | awk -F'.' '{ print $1 }')
+            cd ${SAA_TMP_DIR}/$1
+            if [ $(echo $apar_fix | awk -F'.' '{ print $NF }') == 'tar' ]; then
+                tar xvf $apar_fix > /dev/null 2>&1
+                cd $apar_dir
+            fi
 
-                for file in $(ls | grep epkg.Z | grep -v sig); do
-                    echo "      \`- Running $file preview "
-                    preview_cmd=$(emgr -p -e $file 2> /dev/null)
+            for file in $(ls | grep epkg.Z | grep -v sig); do
+                echo "      \`- Running $file preview "
+                preview_cmd=$(emgr -p -e $file 2>&1)
+                if [ $? -eq 0 ]; then
+                    echo "      \`- APAR $file is APPLICABLE to the system"
+                    system_affected_allv='True'
+                    break
+                else
+                    efix_locked=$(echo "$preview_cmd" | grep "locked by efix")
                     if [ $? -eq 0 ]; then
                         echo "      \`- APAR $file is APPLICABLE to the system"
-                        system_affected='True'
+                        system_affected_allv='True'
                         break
-
                     else
                         echo "      \`- APAR $file is NOT applicable to the system"
-                        system_affected='False'
-                        #emgr -p -e $file 2> /dev/null| grep -p "Prerequisite Number:"
-
+                        system_affected_allv='False'
                     fi
-                done
+                fi
+            done
         fi
 
     fi
@@ -324,23 +336,27 @@ function _check_secid_allv {
 
         for file in $(ls | grep epkg.Z | grep -v sig); do
             echo "      \`- Running $file preview "
-            preview_cmd=$(emgr -p -e $file 2> /dev/null)
+            preview_cmd=$(emgr -p -e $file 2>&1)
             if [ $? -eq 0 ]; then
                 echo "      \`- APAR $file is APPLICABLE to the system"
                 system_affected_allv='True'
                 break
-
             else
-                echo "      \`- APAR $file is NOT applicable to the system"
-                system_affected_allv='False'
-                #emgr -p -e $file 2> /dev/null| grep -p "Prerequisite Number:"
-
+                efix_locked=$(echo "$preview_cmd" | grep "locked by efix")
+                if [ $? -eq 0 ]; then
+                    echo "      \`- APAR $file is APPLICABLE to the system"
+                    system_affected_allv='True'
+                    break
+                else
+                    echo "      \`- APAR $file is NOT applicable to the system"
+                    system_affected_allv='False'
+                fi
             fi
         done
-        
+
     else
         system_affected_allv='False'
-        
+
     fi
 }
 
@@ -413,13 +429,21 @@ function APAR_install {
 
         for file in $(ls | grep epkg.Z | grep -v sig); do
             echo "      \`- Running $file install preview/test "
-            preview_cmd=$(emgr -p -e $file 2> /dev/null)
+            preview_cmd=$(emgr -p -e $file 2>&1)
             if [ $? -eq 0 ]; then
-               echo "      \`- APAR $file is APPLICABLE to the system"
-               emgr -X -e $file
+                echo "      \`- APAR $file is APPLICABLE to the system"
+                emgr -X -e $file
             else
-               echo "      \`- APAR $file is NOT applicable to the system"
-
+                efix_locked=$(echo "$preview_cmd" | grep "locked by efix")
+                if [ $? -eq 0 ]; then
+                    locker=$(echo "$efix_locked" | head -1 | awk '{ print $NF}' | awk -F \" '{ print $2 }' | cut -c0-7)
+                    echo "      \`- Uninstalling the efix locker $locker"
+                    emgr -r -L $locker
+                    echo "      \`- Installing the new efix"
+                    emgr -X -e $file
+                else
+                    echo "      \`- APAR $file is NOT applicable to the system"
+                fi
             fi
         done
         echo
@@ -455,13 +479,21 @@ function APAR_install_allv {
 
         for file in $(ls | grep epkg.Z | grep -v sig); do
             echo "      \`- Running $file install preview/test "
-            preview_cmd=$(emgr -p -e $file 2> /dev/null)
+            preview_cmd=$(emgr -p -e $file 2>&1)
             if [ $? -eq 0 ]; then
-               echo "      \`- APAR $file is APPLICABLE to the system"
-               emgr -X -e $file
+                echo "      \`- APAR $file is APPLICABLE to the system"
+                emgr -X -e $file
             else
-               echo "      \`- APAR $file is NOT applicable to the system"
-
+                efix_locked=$(echo "$preview_cmd" | grep "locked by efix")
+                if [ $? -eq 0 ]; then
+                    locker=$(echo "$efix_locked" | head -1 | awk '{ print $NF}' | awk -F \" '{ print $2 }' | cut -c0-7)
+                    echo "      \`- Uninstalling the efix locker $locker"
+                    emgr -r -L $locker
+                    echo "      \`- Installing the new efix"
+                    emgr -X -e $file
+                else
+                    echo "      \`- APAR $file is NOT applicable to the system"
+                fi
             fi
         done
         echo
@@ -523,8 +555,10 @@ case $1 in
         _check_tmp_dir $2
         _check_protocols
         _check_secid $2
-        _check_secid_allv $2
-	echo
+        if [ system_affected == "False" ]; then
+            _check_secid_allv $2
+        fi
+   echo
         APAR_check $2
 
 
@@ -536,7 +570,9 @@ case $1 in
         _check_tmp_dir $2
         _check_protocols
         _check_secid $2
-        _check_secid_allv $2
+        if [ system_affected == "False" ]; then
+            _check_secid_allv $2
+        fi
         echo
         APAR_info $2
 
@@ -546,11 +582,11 @@ case $1 in
 
         _check_tmp_dir $2
         _check_protocols
-        _check_secid $2
-        _check_secid_allv $2
         echo
         APAR_install $2
-        APAR_install_allv $2
+        if [ system_affected == "False" ]; then
+            _check_secid_allv $2
+        fi
 
     ;;
 
