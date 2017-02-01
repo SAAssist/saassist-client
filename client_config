@@ -1,10 +1,23 @@
 #
 # Security APAR Assist Client (saassist-client) config file
 #
+# Copyright 2016, 2017 Kairo Araujo
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 # Security APAR Assist Installation PATH
 # this is tha path where your client will be available
-SAA_PATH="/Users/kairoaraujo/saassist-client"
+SAA_PATH="/saassist-client"
 
 # Temporally directory used to store APARs and files
 # is important a file with enough space to save files around 200Mb
@@ -22,6 +35,4 @@ SAA_PROTOCOL='nfs'
 SAA_PORT="8000"
 
 # SAA Server NFS Filesystem (only if you are using nfs protocol)
-SAA_FILESYSTEM='../saassist-server/saassist/data/repos'
-
-
+SAA_FILESYSTEM='/saassist-server/saassist/data/repos'
