@@ -14,14 +14,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-version='0.1'
-
+version='0.1.1'
 
 if [ -f ./client_config ]; then
     . ./client_config
 else
     echo "[ERROR] The 'client_config' file needs to be in"
     echo "the same directory of saassist-client"
+    exit 1
+fi
+
+OS_TYPE=$(uname)
+
+if [ $OS_TYPE == "AIX" ]; then
+    continue
+else
+    echo "[ERROR] Only IBM AIX or PowerVM are supported."
+    exit 1
+fi
+
+if [ $(whoami) != "root" ]; then
+    echo "[ERROR] Run saassist-client.sh with root user."
     exit 1
 fi
 
@@ -37,8 +50,11 @@ else
 fi
 
 server_url="http://$SAA_SERVER:$SAA_PORT/"
+server_nfs="${SAA_SERVER}"
 secid_url="$server_url$2/"
-secid_url_version="$secid_url$server_version/"
+secid_nfs="${SAA_FILESYSTEM}/$2"
+secid_url_version=${secid_url}${server_version}
+secid_nfs_version=${secid_nfs}/${server_version}
 
 # check if there is a emgr lock file
 if [ -f /var/locks/emgr.lock ]; then
@@ -58,7 +74,7 @@ function _check_APAR_nfs {
             if [ ! -d ${SAA_FILESYSTEM} ]; then
                 mkdir -p ${SAA_FILESYSTEM}
             fi
-            mount ${SAA_SERVER}:${SAA_FILESYSTEM} ${SAA_FILESYSTEM}
+            mount ${server_nfs}:${SAA_FILESYSTEM} ${SAA_FILESYSTEM}
             if [ $? -eq 0 ]; then
                 echo "[CLIENT] Filesystem ${SAA_FILESYTEM} ready to be used"
             else
@@ -105,20 +121,43 @@ function _check_tmp_dir {
 
     if [ ! -d $SAA_TMP_DIR/$1 ]; then
             mkdir -p $SAA_TMP_DIR/$1
+            if [ $? -ne 0 ]; then
+                echo "[ERROR] Error to create $SAA_TMP_DIR/$1"
+                exit 1
+            fi
+
+    else
+        # this is to avoid multiple sessions using the same temporary file
+        # system, for example a NFS. In this case, if another session is
+        # writing or downloading the files it will wait 30 seconds maximum
+        # remark: check on _check_secid comments with "# lock to create files"
+        count=0
+        while [ $count -lt 3 ]; do
+            if [ ! -f $SAA_TMP_DIR/$1/$1.lock ]; then
+                sleep 10;
+                count=$((count+1))
+            else
+                count=3
+            fi
+        done
+        rm $SAA_TMP_DIR/$1/$1.lock  > /dev/null 2>&1
     fi
 }
+
 # function to check CVE/IV on server
 function _check_secid {
 
     # check if APAR fix is available on http/nfs server
     if [ ${SAA_PROTOCOL} == 'http' ]; then
-        secid_test=$(curl -o /dev/null -s -I -f ${secid_url})
+        secid_test=$(curl -o /dev/null -sIf ${secid_url})
         rc=$?
-    fi
 
-    if [ ${SAA_PROTOCOL} == 'nfs' ]; then
-        secid_test=$(ls -ld ${SAA_FILESYSTEM}/$1 > /dev/null 2>&1)
+    elif [ ${SAA_PROTOCOL} == 'nfs' ]; then
+        secid_test=$(ls -ld ${secid_nfs} > /dev/null 2>&1)
         rc=$?
+    else
+        echo "[ERROR] Unexpected protocol ${SAA_PROTOCOL}"
+        exit 1
     fi
 
     if [ $rc -ne 0 ]; then
@@ -134,56 +173,90 @@ function _check_secid {
 
     else
         # if available, check if the version is affected
-        echo "[CLIENT] Retrieving APAR $1 info from ${SAA_SERVER}"
-        echo "[CLIENT] Checking if CVE/IV is applicable for OS version $server_version"
+        echo "[CLIENT] Retrieving APAR $1 info from ${server_nfs}"
+        echo "[CLIENT] Checking if CVE/IV is applicable for OS version ${server_version}"
         if [ ${SAA_PROTOCOL} == 'http' ]; then
-            secid_version_test=$(curl -o /dev/null -s -I -f ${secid_url_version})
+            secid_version_test=$(curl -o /dev/null -sIf ${secid_url_version})
             rc=$?
         fi
 
         if [ ${SAA_PROTOCOL} == 'nfs' ]; then
-            secid_version_test=$(ls -ld ${SAA_FILESYSTEM}/$1/$server_version > /dev/null 2>&1)
+            secid_version_test=$(ls -ld ${secid_nfs_version} > /dev/null 2>&1)
             rc=$?
         fi
+
         if [ $rc -ne 0 ]; then
-            echo "      \`- The version $server_version is not affected by $1"
-            system_affected='False'
-        else
-            echo "      \`- This server is affected by $1"
+            # check if there is a general update, IBM sometimes creates a
+            # generic version based only on the fileset.
+            # Examples: CVE-2015-7974 There is a generic entry + versioned
+            #           CVE-2015-7973 Only generic entry
             if [ ${SAA_PROTOCOL} == 'http' ]; then
-                curl -s ${secid_url_version}/$1.info -o ${SAA_TMP_DIR}/$1/$1.info
+                http_test=$(curl -o /dev/null -sIf ${secid_url}ALL)
                 rc=$?
             fi
 
             if [ ${SAA_PROTOCOL} == 'nfs' ]; then
-                cp ${SAA_FILESYSTEM}/$1/$server_version/$1.info ${SAA_TMP_DIR}/$1/$1.info > /dev/null 2>&1
+                nfs_test=$(ls -ld ${secid_nfs}/ALL)
                 rc=$?
+            fi
+
+            if [ $rc -eq 0 ]; then
+                secid_url_version=${secid_url}ALL
+                secid_nfs_version=${secid_nfs}/ALL
+                echo "      \`- There is a generic patch for $1."
+                system_affected='True'
+            else
+                echo "      \`- The version $server_version is not affected by $1"
+                system_affected='False'
+            fi
+
+        else
+            system_affected='True'
+        fi
+
+        if [ ${system_affected} == 'True' ]; then
+            if [ ! -f ${SAA_TMP_DIR}/$1/$1.info ]; then
+                if [ ${SAA_PROTOCOL} == 'http' ]; then
+                    # lock to create files
+                    touch $SAA_TMP_DIR/$1/$1.lock > /dev/null 2>&1
+
+                    curl -s ${secid_url_version}/$1.info -o ${SAA_TMP_DIR}/$1/$1.info
+                    rc=$?
+
+                    # unlock
+                    rm $SAA_TMP_DIR/$1/$1.lock > /dev/null 2>&1
+                fi
+
+                if [ ${SAA_PROTOCOL} == 'nfs' ]; then
+                    # lock to create files
+                    touch $SAA_TMP_DIR/$1/$1.lock > /dev/null 2>&1
+
+                    cp ${secid_nfs_version}/$1.info ${SAA_TMP_DIR}/$1/$1.info > /dev/null 2>&1
+                    rc=$?
+
+                    # unlock
+                    rm $SAA_TMP_DIR/$1/$1.lock > /dev/null 2>&1
+                fi
+            else
+                rc=0
             fi
 
             if [ $rc -ne 0 ]; then
                 echo "[ERROR] Failed to saved the $1.info file"
                 exit 1
             fi
+
+            # load APAR information
             . /${SAA_TMP_DIR}/$1/$1.info
-            system_affected='True'
 
-        fi
-
-        # if the version is affected next step is check with the release is
-        # affected
-        if [ $system_affected == 'True' ]; then
             echo "[CLIENT] Checking if CVE/IV is applicable for OS release $server_release"
             for release in ${AFFECTED_RELEASES}; do
-                if [ "$release" == "$server_release" ]; then
+                if [ "$release" == "$server_release" ] || [ $release == "ALL" ];
+                then
                     system_affected='True'
+                    break
                 fi
             done
-
-            if [ "$system_affected" == 'False' ]; then
-                echo "      \`- $server_release is not affected by $1"
-            else
-                echo "      \`- $server_release is affected by $1"
-            fi
         fi
 
         # if the release is affected, check if the fix is already installed
@@ -205,7 +278,7 @@ function _check_secid {
 
                 if [ "$iv_ver" == "$os_ver" ]; then
                     if [ $(echo $1 | cut -c1-2) == "IV" ]; then
-                        apar_name=$1
+                        apar_name=$1I m
                     else
                         apar_name=$(echo ${iv} | /usr/bin/awk -F':' '{ print $2 }')
                     fi
@@ -230,16 +303,32 @@ function _check_secid {
             for apar in ${APAR_FIX}; do
                 apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
 
-                if [ ${SAA_PROTOCOL} == 'http' ]; then
-                    curl -s $secid_url_version/$apar_fix -o $SAA_TMP_DIR/$1/$apar_fix
-                    rc=$?
-                fi
+                if [ ! -f $SAA_TMP_DIR/$1/$apar_fix ]; then
+                    if [ ${SAA_PROTOCOL} == 'http' ]; then
+                        # lock to create files
+                        touch $SAA_TMP_DIR/$1/$1.lock > /dev/null 2>&1
 
-               if [ ${SAA_PROTOCOL} == 'nfs' ]; then
-                    cp ${SAA_FILESYSTEM}/$1/$server_version/$apar_fix ${SAA_TMP_DIR}/$1/$apar_fix > /dev/null 2>&1
-                    rc=$?
-                fi
+                        curl -s $secid_url_version/$apar_fix -o $SAA_TMP_DIR/$1/$apar_fix
+                        rc=$?
 
+                        # unlock
+                        rm $SAA_TMP_DIR/$1/$1.lock > /dev/null 2>&1
+                    fi
+
+                    if [ ${SAA_PROTOCOL} == 'nfs' ]; then
+                        # lock to create files
+                        touch $SAA_TMP_DIR/$1/$1.lock > /dev/null 2>&1
+
+                        cp $secid_nfs_version/$apar_fix ${SAA_TMP_DIR}/$1/$apar_fix > /dev/null 2>&1
+                        rc=$?
+
+                        # unlock
+                        rm $SAA_TMP_DIR/$1/$1.lock > /dev/null 2>&1
+                    fi
+
+                else
+                    rc=0
+                fi
 
                 if [ $rc -ne 0 ]; then
                     echo "[ERROR] Failed to download ${apar_fix}"
@@ -251,7 +340,15 @@ function _check_secid {
             apar_dir=$(echo $apar_fix | awk -F'.' '{ print $1 }')
             cd ${SAA_TMP_DIR}/$1
             if [ $(echo $apar_fix | awk -F'.' '{ print $NF }') == 'tar' ]; then
-                tar xvf $apar_fix > /dev/null 2>&1
+                if [ ! -f $apar_dir ]; then
+                    # lock to create files
+                    touch $SAA_TMP_DIR/$1/$1.lock > /dev/null 2>&1
+
+                    tar xvf $apar_fix > /dev/null 2>&1
+
+                    # unlock
+                    rm $SAA_TMP_DIR/$1/$1.lock > /dev/null 2>&1
+                fi
                 cd $apar_dir
             fi
 
@@ -280,108 +377,18 @@ function _check_secid {
 
 }
 
-# function to check if there the APAR is for ALL version.
-# this is updates for OpenSSL, OpenSSH, Java -- 'non-natives' AIX/PowerVM
-# filesets and is better check for all versions. It is not for specific version
-function _check_secid_allv {
-
-    secid_url_all="${secid_url}ALL"
-    if [ ${SAA_PROTOCOL} == 'http' ]; then
-        secid_version_test=$(curl -o /dev/null -s -I -f ${secid_url_all})
-        rc=$?
-    fi
-
-    if [ ${SAA_PROTOCOL} == 'nfs' ]; then
-        secid_version_test=$(ls -ld ${SAA_FILESYSTEM}/$1/ALL > /dev/null 2>&1)
-        rc=$?
-    fi
-
-    if [ $rc -eq 0 ]; then
-        # if available, check if the version is affected
-
-        echo "[CLIENT] Retrieving APAR $1 info from ${SAA_SERVER}"
-        if [ ${SAA_PROTOCOL} == 'http' ]; then
-            curl -s ${secid_url_all}/$1.info -o ${SAA_TMP_DIR}/$1/$1.info
-            rc=$?
-        fi
-
-        if [ ${SAA_PROTOCOL} == 'nfs' ]; then
-            cp ${SAA_FILESYSTEM}/$1/ALL/$1.info ${SAA_TMP_DIR}/$1/$1.info > /dev/null 2>&1
-            rc=$?
-        fi
-
-        if [ $rc -ne 0 ]; then
-            echo "[ERROR] Failed to saved the $1.info file"
-            exit 1
-        fi
-        . /${SAA_TMP_DIR}/$1/$1.info
-        system_affected_allv='True'
-
-        echo "[CLIENT] Was detected that this APAR also there is a 'general' PowerVM/AIX efix."
-        echo "         -> ${APAR_ABSTRACT}"
-
-        for apar in ${APAR_FIX}; do
-            apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
-
-            if [ ${SAA_PROTOCOL} == 'http' ]; then
-                curl -s $secid_url_all/$apar_fix -o $SAA_TMP_DIR/$1/$apar_fix
-                rc=$?
-            fi
-
-            if [ ${SAA_PROTOCOL} == 'nfs' ]; then
-                cp ${SAA_FILESYSTEM}/$1/ALL/$apar_fix ${SAA_TMP_DIR}/$1/$apar_fix > /dev/null 2>&1
-                rc=$?
-            fi
-
-
-            if [ $rc -ne 0 ]; then
-                 echo "[ERROR] Failed to download ${apar_fix}"
-                 exit 1
-            fi
-        done
-
-        apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
-        apar_dir=$(echo $apar_fix | awk -F'.' '{ print $1 }')
-        cd ${SAA_TMP_DIR}/$1
-        if [ $(echo $apar_fix | awk -F'.' '{ print $NF }') == 'tar' ]; then
-            tar xvf $apar_fix > /dev/null 2>&1
-            cd $apar_dir
-        fi
-
-        for file in $(ls | grep epkg.Z | grep -v sig); do
-            echo "      \`- Running $file preview "
-            preview_cmd=$(emgr -p -e $file 2>&1)
-            if [ $? -eq 0 ]; then
-                echo "      \`- APAR $file is APPLICABLE to the system"
-                system_affected_allv='True'
-                break
-            else
-                efix_locked=$(echo "$preview_cmd" | grep "locked by efix")
-                if [ $? -eq 0 ]; then
-                    echo "      \`- APAR $file is APPLICABLE to the system"
-                    system_affected_allv='True'
-                    break
-                else
-                    echo "      \`- APAR $file is NOT applicable to the system"
-                    system_affected_allv='False'
-                fi
-            fi
-        done
-
-    else
-        system_affected_allv='False'
-
-    fi
-}
 
 # function to check the protocols
 function _check_protocols {
     if [ ${SAA_PROTOCOL} == 'http' ]; then
         _check_APAR_http
-    fi
 
-    if [ ${SAA_PROTOCOL} == 'nfs' ]; then
+    elif [ ${SAA_PROTOCOL} == 'nfs' ]; then
         _check_APAR_nfs
+
+    else
+        echo "[ERROR] Unexpected protocol ${SAA_PROTOCOL}."
+        exit 1
     fi
 
 }
@@ -403,16 +410,16 @@ function APAR_info  {
     fi
 
     if [ ${SAA_PROTOCOL} == 'nfs' ]; then
-        more ${SAA_FILESYSTEM}/$1/$server_version/${APAR_ASC}
+        more ${secid_nfs_version}/${APAR_ASC}
     fi
 
 }
 
 # function to check if the apar is affected or not
 function APAR_check  {
-    if [ $system_affected == "True" ] || [ $system_affected_allv == "True" ];
-    then
+    if [ $system_affected == "True" ]; then
         echo "[CLIENT] This system is AFFECTED by $1 (REBOOT REQUIRED: $APAR_REBOOT)"
+
     else
         echo "[CLIENT] This system is NOT AFFECTED by $1"
         exit 1
@@ -471,59 +478,6 @@ function APAR_install {
 
 }
 
-# install APARs All versions if affected
-function APAR_install_allv {
-
-    if [ $system_affected_allv == "True" ]; then
-        echo "[CLIENT] Starting the APAR $1 in 10 seconds. Use CTRL+C to cancel now!"
-        sleep 10
-        for apar in ${APAR_FIX}; do
-            apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
-            if [ $? -ne 0 ]; then
-                echo "[ERROR] Failed to download ${apar_fix}"
-                exit 1
-            fi
-        done
-
-        apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
-        apar_dir=$(echo $apar_fix | awk -F'.' '{ print $1 }')
-        cd ${SAA_TMP_DIR}/$1
-
-        if [ $(echo $apar_fix | awk -F'.' '{ print $NF }') == 'tar' ]; then
-           cd $apar_dir
-        fi
-
-        for file in $(ls | grep epkg.Z | grep -v sig); do
-            echo "      \`- Running $file install preview/test "
-            preview_cmd=$(emgr -p -e $file 2>&1)
-            if [ $? -eq 0 ]; then
-                echo "      \`- APAR $file is APPLICABLE to the system"
-                emgr -X -e $file
-                break
-
-            else
-                efix_locked=$(echo "$preview_cmd" | grep "locked by efix")
-                if [ $? -eq 0 ]; then
-                    locker=$(echo "$efix_locked" | head -1 | awk '{ print $NF}' | awk -F \" '{ print $2 }')
-                    echo "      \`- Uninstalling the efix locker $locker"
-                    emgr -r -L $locker
-                    echo "      \`- Installing the new efix"
-                    emgr -X -e $file
-                    break
-                else
-                    echo "      \`- APAR $file is NOT applicable to the system"
-                fi
-            fi
-        done
-        echo
-        echo "[CLIENT] APAR $1 Installation finished. (REBOOT REQUIRED: $APAR_REBOOT)"
-    else
-        echo "[CLIENT] This system is NOT AFFECTED by $1 "
-        exit 1
-    fi
-
-
-}
 
 
 # function to print help message
@@ -574,9 +528,6 @@ case $1 in
         _check_tmp_dir $2
         _check_protocols
         _check_secid $2
-        if [ $system_affected == "False" ]; then
-            _check_secid_allv $2
-        fi
         echo
         APAR_check $2
 
@@ -589,9 +540,6 @@ case $1 in
         _check_tmp_dir $2
         _check_protocols
         _check_secid $2
-        if [ $system_affected == "False" ]; then
-            _check_secid_allv $2
-        fi
         echo
         APAR_info $2
 
@@ -602,15 +550,10 @@ case $1 in
         _check_tmp_dir $2
         _check_protocols
         _check_secid $2
+        APAR_check $2
         echo
-        if [ $system_affected == "False" ]; then
-           _check_secid_allv $2
-           APAR_check $2
-           APAR_install_allv $2
-        else
-           echo
-           APAR_install $2
-        fi
+        APAR_install $2
+
     ;;
 
     *)
