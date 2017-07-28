@@ -14,7 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-version='0.1.1'
+version='0.2.0'
+
+session_hash=$(date +%s_${RANDOM})
 
 if [ -f ./client_config ]; then
     . ./client_config
@@ -55,6 +57,7 @@ secid_url="$server_url$2/"
 secid_nfs="${SAA_FILESYSTEM}/$2"
 secid_url_version=${secid_url}${server_version}
 secid_nfs_version=${secid_nfs}/${server_version}
+saas_flrt_data=${SAA_PATH}/data/flrt_cache.csv
 
 # check if there is a emgr lock file
 if [ -f /var/locks/emgr.lock ]; then
@@ -67,9 +70,9 @@ fi
 function _check_APAR_nfs {
         echo "[CLIENT] Verifying SAA Server over NFS"
 
-        #find_nfs=$(df -k | grep : | grep ${SAA_SERVER})
+        find_nfs=$(df -k | grep : | grep ${SAA_SERVER})
         if [ $? -ne 0 ]; then
-            echo "[CLIENT] Filesystem ${SAA_FILESYTEM} not found"
+            echo "[CLIENT] Filesystem ${SAA_FILESYSTEM} not found"
             echo "[CLIENT] Trying to mount..."
             if [ ! -d ${SAA_FILESYSTEM} ]; then
                 mkdir -p ${SAA_FILESYSTEM}
@@ -133,7 +136,7 @@ function _check_tmp_dir {
         # remark: check on _check_secid comments with "# lock to create files"
         count=0
         while [ $count -lt 3 ]; do
-            if [ ! -f $SAA_TMP_DIR/$1/$1.lock ]; then
+            if [ -f $SAA_TMP_DIR/$1/$1.lock ]; then
                 sleep 10;
                 count=$((count+1))
             else
@@ -163,11 +166,13 @@ function _check_secid {
     if [ $rc -ne 0 ]; then
         echo "[CLIENT] The CVE/IV $1 is not available on server $SAA_SERVER."
         echo
-        echo "         This APAR was not processed by SAAssist Server or not"
-        echo "         exists."
-        echo "         - Check if APAR ID $1 is correct"
+        echo "         This APAR was not processed by SAAssist Server or does"
+        echo "         not exist."
         echo "         - Check with Security APAR Assistant server"
         echo "         administrator if that APAR is already available."
+        echo "         Run on SAAssist Server: saassist-server -c $1"
+        echo
+        echo "         - Check if APAR ID $1 is correct"
         echo
         exit 1
 
@@ -278,7 +283,7 @@ function _check_secid {
 
                 if [ "$iv_ver" == "$os_ver" ]; then
                     if [ $(echo $1 | cut -c1-2) == "IV" ]; then
-                        apar_name=$1I m
+                        apar_name=$1
                     else
                         apar_name=$(echo ${iv} | /usr/bin/awk -F':' '{ print $2 }')
                     fi
@@ -339,12 +344,19 @@ function _check_secid {
             apar_fix=$(echo $apar | awk -F'/' '{ print $NF }')
             apar_dir=$(echo $apar_fix | awk -F'.' '{ print $1 }')
             cd ${SAA_TMP_DIR}/$1
+            
             if [ $(echo $apar_fix | awk -F'.' '{ print $NF }') == 'tar' ]; then
                 if [ ! -f $apar_dir ]; then
                     # lock to create files
                     touch $SAA_TMP_DIR/$1/$1.lock > /dev/null 2>&1
 
-                    tar xvf $apar_fix > /dev/null 2>&1
+                    untar_output=$(tar xvf $apar_fix 2> /dev/null)
+                    if [ $? -ne 0 ]; then
+                        echo "[ERROR] Failed to uncompress the fix"
+                        exit
+                    fi
+
+                    apar_dir=$(echo ${untar_output} | tail -1 | awk '{ print $2 }' | awk -F "/" '{ print $1 }')
 
                     # unlock
                     rm $SAA_TMP_DIR/$1/$1.lock > /dev/null 2>&1
@@ -393,24 +405,71 @@ function _check_protocols {
 
 }
 
+# function to get flrt data file
+function _get_flrt_data_file {
+    echo "[CLIENT] Downloading FLRT data from SAAssist Server"
+    if [ ${SAA_PROTOCOL} == 'http' ]; then
+        curl -s ${server_url}/repos/flrt_cache.csv -o ${saas_flrt_data}
+        if [ $? -ne 0 ]; then
+            echo "[ERROR] Failed to download FLRT data file from Server ${SAA_SERVER}"
+            exit 1
+        else
+            echo "[CLIENT] Downloading finished."
+        fi
+    fi
+
+    if [ ${SAA_PROTOCOL} == 'nfs' ]; then
+        cp ${SAA_FILESYSTEM}/flrt_cache.csv ${saas_flrt_data}
+        if [ $? -ne 0 ]; then
+            echo "[ERROR] Failed to download FLRT data file from Server ${SAA_SERVER}"
+            exit 1
+        else
+            echo "[CLIENT] Downloading finished."
+
+        fi
+    fi
+}
+
+# function to check version saassist-server
+function  _check_saaserver_version {
+
+    if [ ${SAA_PROTOCOL} == 'http' ]; then
+        SAA_SERVER_VERSION=$(curl -s ${server_url}/repos/VERSION)
+        if [ $? -ne 0 ]; then
+            echo "[ERROR] Failed to download FLRT data file from Server ${SAA_SERVER}"
+            exit 1
+        fi
+    fi
+
+    if [ ${SAA_PROTOCOL} == 'nfs' ]; then
+        SAA_SERVER_VERSION=$(cat ${SAA_FILESYSTEM}/VERSION)
+        if [ $? -ne 0 ]; then
+            echo "[ERROR] Failed to download FLRT data file from Server ${SAA_SERVER}"
+            exit 1
+        fi
+    fi
+
+    SAA_SERVER_MAJOR=$(echo ${SAA_SERVER_VERSION} | awk -F"." '{ print $1"."$2 }')
+    if [ ${SAA_SERVER_MAJOR} != "0.2" ]; then
+        echo "[ERROR] The Security APAR Assistant server must be 0.2.x"
+        exit
+    fi
+
+
+}
+
 # function to get the APAR details info
 function APAR_info  {
-
-    if [ $system_affected == "True" ] || [ system_affected_allv == "True" ]; then
-        echo "[CLIENT] This system is AFFECTED by $1 (REBOOT REQUIRED: $APAR_REBOOT)"
-    else
-        echo "[CLIENT] This system is NOT AFFECTED by $1"
-    fi
 
     echo "[CLIENT] Getting APAR '$1' info"
 
     if [ ${SAA_PROTOCOL} == 'http' ]; then
         sleep 2
-        curl -L ${secid_url_version}/${APAR_ASC} | more
+        curl -L ${secid_url_version}/$1.asc | more
     fi
 
     if [ ${SAA_PROTOCOL} == 'nfs' ]; then
-        more ${secid_nfs_version}/${APAR_ASC}
+        more ${secid_nfs_version}/$1.asc
     fi
 
 }
@@ -478,20 +537,157 @@ function APAR_install {
 
 }
 
+function APAR_checkall {
+
+    echo "[CLIENT] Generating checkall report"
+    apar_server_list="${SAA_TMP_DIR}/apar_server_list_${session_hash}"
+    grep ${server_release} ${saas_flrt_data} | awk -F, '{ print $5" ; "$10" ; "$4" ; "$9" ; "$NF" ; "$7" ; "$14}' | sed 's/ *$//' | sed 's/: /:/g' | sort -k1 -u > ${apar_server_list}
+    if [ $? -ne 0 ];then
+        echo "[ERROR] Error to collect server APAR list."
+        exit 1
+    fi
+
+    if [ $(du -sk ${apar_server_list} | awk '{ print $1 }') -eq 0 ]; then
+        echo "[INFO] No APARs available for ${server_release} version"
+        exit
+    fi
+
+    clear
+    printf "SECURITY APAR     DATE       AFFECTED       BOOT         DESCRIPTION\n"
+    printf "-------------------------------------------------------------------------------------------------------------\n"
+
+    LAST_APAR_VERIFIED="None"
+    while read apar_info;
+    do
+            APAR=$(echo $apar_info | awk -F ";" '{ print $1 }')
+            APAR_DATE=$(echo $apar_info | awk -F ";" '{ print $2 }')
+            APAR_DESCRIPTION=$(echo $apar_info | awk -F ";" '{ print $3 }')
+            APAR_FILESETS=$(echo $apar_info | awk -F ";" '{ print $4 }')
+            APAR_BOOT_REQUIRED=$(echo $apar_info | awk -F ";" '{ print $5 }')
+            APAR_IFIX=$(echo $apar_info | awk -F ";" '{ print $6 }' | sed 's/\///g')
+            APAR_CODE=$(echo $apar_info | awk -F ";" '{ print $7 }' | awk -F '/' '{ print $NF }' | awk -F ':' '{ print $1 }' | sed 's/ CVE/CVE/g')
+
+            if [ "${APAR_CODE}" == "" ];
+            then
+                APAR_CODE=${APAR}
+            fi
+
+        if [ "${LAST_APAR_VERIFIED}" == "${APAR_CODE}" ]; then
+            continue
+        fi
+
+        # check if some ifix is installed to the APAR
+        APAR_IFIX_APPLIED=False
+        for ifix in ${APAR_IFIX};
+        do
+            ifix_number=$(echo ${ifix} | grep IV | awk -F "." '{ print $1 }')
+            if [ "${ifix_number}" != "" ]; then
+                ifix_status=$(emgr -l 2> /dev/null | grep ${ifix_number})
+                if [ $? -eq 0 ]; then
+                    APAR_IFIX_APPLIED=True
+                fi
+            fi
+        done
+
+        # getting filesets and test
+        for fileset in ${APAR_FILESETS};
+        do
+            fileset_name=$(echo ${fileset} | awk -F":" '{ print $1 }')
+            fileset_affected=$(echo ${fileset} | awk -F":" '{ print $2 }')
+            apar_installed=$(lslpp -Lcq ${fileset_name} 2> /dev/null)
+
+            if [ "${apar_installed}" == "" ];
+            then
+                        APAR_AFFECT=False
+            else
+                installed_lpp_package=$(echo ${apar_installed} | awk -F: '{ print $1 }')
+                installed_lpp_name=$(echo ${apar_installed} | awk -F: '{ print $2 }')
+                installed_lpp_release=$(echo ${apar_installed} | awk -F: '{ print $3 }')
+                installed_lpp_version=$(echo ${installed_lpp_release} | awk -F"." '{ print $1"."$2"."$3 }')
+                installed_lpp_minor=$(echo ${installed_lpp_release} | awk -F"." '{ print $NF }')
+            fi
+
+            #check if fileset_affect is a range
+            fileset_range=$(echo ${fileset_affected} | grep "-")
+            if [ $? -eq 0 ]; then
+                release_start=$(echo ${fileset_range} | awk -F"-" '{ print $1 }')
+                release_start_minor=$(echo ${release_start} | awk -F"." '{ print $NF }')
+                release_finish=$(echo ${fileset_range} | awk -F"-" '{ print $2 }')
+                release_finish_minor=$(echo ${release_finish} | awk -F"." '{ print $NF }')
+                release_count=$(echo ${release_start} | awk -F"." '{ print $NF }')
+                fileset_version=$(echo ${release_start} | awk -F"." '{ print $1"."$2"."$3 }')
+
+                if [ "${fileset_version}" == "${installed_lpp_version}" ];
+                then
+                    if [ $installed_lpp_minor -ge $release_start_minor -a $installed_lpp_minor -le $release_finish_minor ];
+                    then
+                        APAR_AFFECTED=True
+                        break
+                    else
+                        APAR_AFFECTED=False
+                    fi
+                fi
+
+            else
+
+                if [ "$installed_lpp_release" == "$fileset_range" ]; then
+                    APAR_AFFECTED=True
+                    break
+                else
+                    APAR_EFFECTED=False
+                fi
+            fi
+        done
+
+        if [ "${APAR_AFFECTED}" == True ]; then
+
+            if [ "${APAR_IFIX_APPLIED}" == True ]; then
+                printf "${APAR_CODE}\t ${APAR_DATE}     N(ifix)    ${APAR_BOOT_REQUIRED} \t${APAR_DESCRIPTION}\n"
+                APAR_IFIX_APPLIED=False
+
+            else
+                saa_preview=$(sh saassist-client.sh preview ${APAR_CODE} | tail -1 | grep "NOT AFFECTED")
+                if [ $? -eq 0 ] ; then
+                     printf "${APAR_CODE}\t ${APAR_DATE}     N          ${APAR_BOOT_REQUIRED} \t${APAR_DESCRIPTION}\n"
+
+                else
+                     printf "${APAR_CODE}\t ${APAR_DATE}    *Y*         ${APAR_BOOT_REQUIRED} \t${APAR_DESCRIPTION}\n"
+                fi
+
+            fi
+
+        else
+                printf "${APAR_CODE}\t ${APAR_DATE}     N          ${APAR_BOOT_REQUIRED} \t${APAR_DESCRIPTION}\n"
+        fi
+
+        LAST_APAR_VERIFIED=${APAR_CODE}
+
+    done < ${apar_server_list}
+
+}
 
 
 # function to print help message
 function _print_help {
 
-    echo 'Usage: saassist-client [check|info|install] "CVE|IV-NUM" | help'
+    echo 'Usage: saassist-client [help] [checkall] [preview|info|install "CVE|IV-NUM"]'
     echo
-    echo 'check   : Verify if the system is affected by CVE/IV'
-    echo 'info    : Open the details about the CVE/IV if system is affected'
-    echo 'install : Install the APAR if it is available and applicable to the'
-    echo '          the system'
+    echo 'optional arguments:'
     echo
-    echo 'Example:'
-    echo '  saassist-client check "CVE-2016-0281"'
+    echo 'help     : show this help and exit'
+    echo 'checkall : List all existent APARS for the system and check if it'
+    echo '           affects the system'
+    echo 'preview  "CVE|IV-NUM":'
+    echo '           Run a preview and validate if it is affected'
+    echo 'info     "CVE|IV-NUM":'
+    echo '           Open the details about the CVE/IV if system is affected'
+    echo 'install  "CVE|IV-NUM":'
+    echo '           Install the APAR if it is available and applicable to the'
+    echo '           the system'
+    echo
+    echo 'Examples:'
+    echo '  saassist-cleint checkall'
+    echo '  saassist-client preview "CVE-2016-0281"'
     echo '  saassist-client check "IV91004"'
     echo
     echo 'It requires the client_config properly configured and a Security APAR'
@@ -514,32 +710,40 @@ echo "========================================================================"
 echo
 echo "Current OS Version: $server_release"
 echo
-if [ -z $2 ]; then
-    echo "[ERROR] A CVE or IV is required"
-    echo
-    _print_help
-    exit 1
-fi
+#if [ -z $2 ]; then
+#    echo "[ERROR] A CVE or IV is required"
+#    echo
+#    _print_help
+#    exit 1
+#fi
 
 case $1 in
 
-    'check')
+    'checkall')
+
+        _check_tmp_dir
+        _check_protocols
+        _check_saaserver_version
+        _get_flrt_data_file
+        APAR_checkall
+    ;;
+
+
+    'preview')
 
         _check_tmp_dir $2
         _check_protocols
+        _check_saaserver_version
         _check_secid $2
         echo
         APAR_check $2
-
-
-
     ;;
 
     'info')
 
         _check_tmp_dir $2
         _check_protocols
-        _check_secid $2
+        _check_saaserver_version
         echo
         APAR_info $2
 
@@ -549,6 +753,7 @@ case $1 in
 
         _check_tmp_dir $2
         _check_protocols
+        _check_saaserver_version
         _check_secid $2
         APAR_check $2
         echo
